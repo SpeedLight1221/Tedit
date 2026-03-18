@@ -1,3 +1,4 @@
+#include <bits/types/error_t.h>
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
@@ -6,7 +7,8 @@
 #include <stdarg.h>
 #include <time.h>
 #include <stddef.h>
-#include <ctype.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +24,7 @@
 
 // #region Data
 enum editorKey {
+  BACKSPACE = 127,
   ARROW_LEFT = 1000,
   ARROW_RIGHT,
   ARROW_UP,
@@ -50,6 +53,7 @@ struct editorConfig {
   int rowoffset;
   int coloffset;
   int numrows;
+  int dirty;
   int uilinecount;
   char *filename;
   char statusmsg[80];
@@ -58,6 +62,10 @@ struct editorConfig {
 };
 
 struct editorConfig E;
+// #endregion
+
+// #region prototypes
+void setStatusMessage(const char *fmt,...);
 // #endregion
 
 // #region Terminal
@@ -226,6 +234,7 @@ void updateRow(erow *row){
     if(row->chars[j]== '\t') tabs++;
   }
 
+
   free(row->render);
   row->render = malloc(row->size + tabs*(TAB_STOP-1)+ 1);
 
@@ -247,6 +256,15 @@ void updateRow(erow *row){
 }
 
 
+void addCharToRow(erow *row, int chr, int at){
+  if(at < 0 || at > row->size ) at = row->size;
+  row->chars = realloc(row->chars, row->size+2);
+  memmove(&row->chars[at+1], &row->chars[at], row->size-at+1);
+  row->size++;
+  row->chars[at] = chr;
+  updateRow(row);
+}
+
 
 
 void appendRow(char *s, size_t len) {
@@ -263,9 +281,179 @@ void appendRow(char *s, size_t len) {
   updateRow(&E.row[at]);
 
   E.numrows++;
+  E.dirty++;
+}
+
+
+void rowInsertCharacter(int c)
+{
+   
+
+    erow *curent = &E.row[E.cy];
+   
+    addCharToRow( curent ,c, E.cx);
+    E.dirty++;
+}
+
+void insertRow(char *s, size_t len, int at){
+
+
+  erow *newp = realloc(E.row, sizeof(erow)*(E.numrows+1));
+  if(newp == NULL){
+    setStatusMessage("Realloc failed: %s", strerror(errno));
+    return;
+  }
+  else {  
+    E.row = newp;
+  }
+
+  int to = E.cy; //when shifting rows down, it stops here (either where the new line was created or one below)
+  if(E.cx != 0) to +=1;
+
+  setStatusMessage("At: %d To: %d ",at,to);
+
+  appendRow(E.row[E.numrows-1].chars, E.row[E.numrows-1].size); // create a copy of the last line
+  for(int i = (E.numrows-2); i > to; i--){//set the contents of a row to the one above it, for all rows below TO
+    E.row[i].size = E.row[i-1].size;
+    free(E.row[i].chars);
+    E.row[i].chars = malloc(E.row[i].size+1 ); 
+    memcpy(E.row[i].chars, E.row[i-1].chars, E.row[i].size );
+    updateRow(&E.row[i]); 
+  }
+  //at this point there will be a duped line, either the current (if e.cx is 0) or the one below otherwise
+  //return;
+
+  if(E.cx == 0){
+    E.row[to].size = 0;
+    free(E.row[to].chars);
+    E.row[to].chars = malloc(1 ); 
+    E.row[to].chars[0] = '\0';
+    updateRow(&E.row[to]);
+
+    E.cy++;
+    E.cx =0;
+
+    return;
+  }
+
+  int splicePoint = E.row[E.cy].size-at;
+
+  E.row[to].size = splicePoint;
+  free(E.row[to].chars);
+  E.row[to].chars = malloc(sizeof(char)*(splicePoint+1));
+  memcpy(E.row[to].chars, E.row[E.cy].chars+at, splicePoint*sizeof(char));
+  E.row[to].chars[splicePoint] = '\0';
+  updateRow(&E.row[to]);
+
+
+  char temp[at+1];
+  memcpy(temp, E.row[E.cy].chars,at );
+  temp[at] = '\0';
+  E.row[E.cy].size = at;
+  free(E.row[E.cy].chars);
+  E.row[E.cy].chars = malloc(sizeof(char)*(at+1));
+  memcpy( E.row[E.cy].chars,temp,at+1 );
+  updateRow(&E.row[E.cy]);
+  E.cy++;
+  E.cx =0;
+
+
+
+
+  /*int copylen = E.row[to].size - at;
+  if(copylen == E.row[to].size){
+    copylen = 0;
+  }
+ 
+
+  E.row[to].size = copylen;
+  free(E.row[to].chars);
+  E.row[to].chars = malloc(copylen+1);
+  strncpy(E.row[to].chars, E.row[to-1].chars+at, copylen);
+  E.row[to].chars[copylen] = '\0';
+  updateRow(&E.row[to]);
+
+
+
+
+  int newlen = E.row[to-1].size-copylen;
+  E.row[to-1].size = newlen;
+  char temps[newlen+1];
+  strncpy(temps, E.row[to-1].chars, newlen);
+  temps[newlen] = '\0';
+  free(E.row[to-1].chars);
+  E.row[to-1].chars = malloc(newlen+1);
+  strncpy(E.row[to-1].chars, temps, newlen+1);
+  updateRow(&E.row[to-1]);
+
+      E.cx = 0;
+  E.cy++;*/
+
+
+  
+
+}
+
+void insertNewLine(){
+  //erow *current = &E.row[E.cy];
+  insertRow("test", 4, E.cx);
+
+
+
 }
 // #endregion
+
+
 // #region file IO
+
+
+char *erowsToString(int *buflen){
+  int len = 0;
+  int j;
+  for(j =0; j < E.numrows; j++){
+    len += E.row[j].size+1;
+  }
+  *buflen = len;
+
+  char *buff = malloc(len);
+  char *p = buff; //will point to the end of the buffer
+  for(j =0; j < E.numrows; j++){
+    memcpy(p, E.row[j].chars, E.row[j].size);
+    p += E.row[j].size;
+    *p = '\n';
+    p++;
+
+  }
+
+  return buff;
+
+}
+
+void editorSave(){
+  if(E.filename == NULL) return;
+
+  int len;
+  char *buff = erowsToString(&len);
+  int fd = open(E.filename, O_RDWR | O_CREAT, 0644); //opens file, creates if it doesnt exit and sets its flags to rw to owner, r to others
+  if(fd != -1){
+    if(ftruncate(fd, len)!=-1){
+      if( write(fd, buff, len) == len){
+        close(fd);
+        free(buff);
+        setStatusMessage("%d bytes written to the disk", len);
+        E.dirty = 0;
+        return;
+      }
+    }
+    close(fd);
+  }
+    free(buff);
+    setStatusMessage("Save Failed, I/O error %s", strerror(errno));
+  
+
+  
+}
+
 
 void editorOpen(char *filename) {
   free(E.filename);
@@ -287,6 +475,7 @@ void editorOpen(char *filename) {
 
   free(line);
   fclose(fp);
+    E.dirty = 0;
 }
 // #endregion
 // #region Apend Buffer
@@ -345,8 +534,8 @@ void setStatusMessage(const char *fmt,...){
 void drawUIRows(struct abuf *ab){
   abAppend(ab, "\x1b[7m", 4);
   char lbuff[80],rbuff[80];
-  int llen = snprintf(lbuff , sizeof(lbuff),"CX: %d CY: %d RX: %d Rows: %d SC: %d SR: %d",E.cx,E.cy, E.rx, E.numrows, E.screencols, E.screencols);
-  int rlen = snprintf(rbuff, sizeof(rbuff),"%.30s", E.filename ? E.filename : "[No name]" );
+  int llen = snprintf(lbuff , sizeof(lbuff),"CX: %d CY: %d RX: %d Rows: %d RL: %d RS: %zu",E.cx,E.cy, E.rx, E.numrows, E.row[E.cy].size,sizeof(E.row[E.cy].chars));
+  int rlen = snprintf(rbuff, sizeof(rbuff),"%c%.30s", E.dirty==0 ? ' ' : '*' ,E.filename ? E.filename : "[No name]" );
 
   int space = E.screencols-(rlen+llen);
   abAppend(ab, lbuff, llen);
@@ -436,7 +625,7 @@ void MoveCursor(int key) {
   case ARROW_RIGHT:
     if (row && E.cx < row->size ) {
       E.cx++;
-    }else if (row && E.cx == row->size) {
+    }else if (row && E.cx == row->size && E.cy < E.numrows-1) {
       E.cy++;
       E.cx =0;
     }
@@ -447,7 +636,7 @@ void MoveCursor(int key) {
     }
     break;
   case ARROW_DOWN:
-    if (E.cy < E.numrows) {
+    if (E.cy < E.numrows-1) {
       E.cy++;
     }
     break;
@@ -464,10 +653,16 @@ void processKeypress() {
   int c = readKey();
 
   switch (c) {
+  case '\r':
+    insertNewLine();
+    break;
   case CTRL_KEY('q'):
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
     exit(0);
+    break;
+  case CTRL_KEY('s'):
+    editorSave();
     break;
   case HOME_KEY:
     E.cx = 0;
@@ -491,13 +686,27 @@ void processKeypress() {
           MoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
   } break;
 
+  case DEL_KEY:
+  case BACKSPACE:
+  case CTRL_KEY('h'):
+  /*todo*/
+  break;
+
   case ARROW_UP:
   case ARROW_DOWN:
   case ARROW_RIGHT:
   case ARROW_LEFT:
     MoveCursor(c);
     break;
+
+  case CTRL_KEY('l'):
+  case '\x1b':
+  break; 
+  default:
+    rowInsertCharacter(c);
+    break;
   }
+  
 }
 // #endregion
 // #region  init
@@ -515,6 +724,7 @@ void initEditor() {
   E.filename = NULL;
   E.statusmsg[0] = '\0';
   E.statusmsg_time = 0;
+  E.dirty =0;
 
   if (getWindowSize(&E.screenrows, &E.screencols) == -1)
     die("getWindowSize");
@@ -528,7 +738,10 @@ int main(int argc, char *argv[]) {
   if (argc >= 2) {
     editorOpen(argv[1]);
   }
-  setStatusMessage("HELP : Ctrl-Q to exit");
+  else {
+    appendRow("",0);
+  }
+  setStatusMessage("HELP : Ctrl-Q to exit, Ctrl-S to Save");
   while (1) {
     refreshScreen();
     processKeypress();
@@ -538,5 +751,5 @@ int main(int argc, char *argv[]) {
 }
 // #endregion
 
-// todo : status message, dont really feel like continuing i hate myself
-// also figure out why opening the makefile only shows the fisrt line
+// todo : pressing enter at a newly created line causes a segfaul if done immidiately after creation, or looses a couple of charsif not imiidiately
+
