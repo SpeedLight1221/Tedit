@@ -266,9 +266,16 @@ void addCharToRow(erow *row, int chr, int at){
 }
 
 
-
 void appendRow(char *s, size_t len) {
-  E.row = realloc(E.row, sizeof(erow)*(E.numrows+1));
+  erow *new = realloc(E.row, sizeof(erow)*(E.numrows+1));
+  if(new == NULL){
+    setStatusMessage("Realloc failed at row append");
+    return;
+  }
+  else {
+    E.row = new;
+  }
+
 
   int at = E.numrows;
   E.row[at].size =len;
@@ -288,14 +295,95 @@ void appendRow(char *s, size_t len) {
 void rowInsertCharacter(int c)
 {
    
-
     erow *curent = &E.row[E.cy];
-   
+
     addCharToRow( curent ,c, E.cx);
     E.dirty++;
 }
 
-void insertRow(char *s, size_t len, int at){
+void deleteChar(erow *row, int at){
+  //probably just ignore reallocation for now
+  memmove(&row->chars[at], &row->chars[at+1], row->size-at);
+  row->size--;
+  updateRow(row);
+  E.dirty++;
+}
+
+
+void shiftRowsUp(int toRow){
+  
+  for(int i= toRow; i < E.numrows-1; i++){
+    E.row[i] = E.row[i+1];
+    updateRow(&E.row[i]);
+  }
+  erow *newp = realloc(E.row, sizeof(erow)*(E.numrows-1));
+  if(newp == NULL){
+    setStatusMessage("Realloc failed at row append");
+    return;
+  }
+  else {
+    E.row = newp;
+    E.numrows--;
+  }
+}
+
+int mergeRows(int dest, int src){
+  erow *destRow = &E.row[dest];
+  erow *sourceRow = &E.row[src];
+
+  int oldDestSize = destRow->size;
+  int newsize =  sourceRow->size+ destRow->size;
+  char temp[newsize+1];
+  memcpy(temp, destRow->chars, destRow->size);
+  memcpy(temp+destRow->size, sourceRow->chars, sourceRow->size);
+  temp[newsize] = '\0';
+
+  char *newp =realloc(destRow->chars, newsize+1);
+  if(newp == NULL){
+    setStatusMessage("Row Merge Realloc failed");
+    return -1;
+  }
+  destRow->chars = newp;
+  memcpy(destRow->chars, temp, newsize+1);
+  destRow->size = newsize;
+  updateRow(destRow);
+  shiftRowsUp(src);
+  return oldDestSize;
+
+}
+
+void rowDeleteChar(int at,int row){
+  erow *current = &E.row[row];
+
+  if(at==-1){
+    if(row == 0){
+      return;
+    }
+    int mergePoint = mergeRows( row-1,row);
+
+    E.cy--;
+    E.cx = mergePoint;
+   
+
+  }
+  else if(at == current->size){
+    if(row == E.numrows){
+      return;
+    }
+    mergeRows( row,row+1);
+
+
+  }
+  else {
+    //delete char
+    deleteChar(current, at);
+  }
+
+}
+
+
+
+void insertRow( int atChar, int linenum){
 
 
   erow *newp = realloc(E.row, sizeof(erow)*(E.numrows+1));
@@ -307,10 +395,9 @@ void insertRow(char *s, size_t len, int at){
     E.row = newp;
   }
 
-  int to = E.cy; //when shifting rows down, it stops here (either where the new line was created or one below)
-  if(E.cx != 0) to +=1;
+  int to = linenum; //when shifting rows down, it stops here (either where the new line was created or one below)
+  if(atChar != 0) to +=1;
 
-  setStatusMessage("At: %d To: %d ",at,to);
 
   appendRow(E.row[E.numrows-1].chars, E.row[E.numrows-1].size); // create a copy of the last line
   for(int i = (E.numrows-2); i > to; i--){//set the contents of a row to the one above it, for all rows below TO
@@ -320,47 +407,44 @@ void insertRow(char *s, size_t len, int at){
     memcpy(E.row[i].chars, E.row[i-1].chars, E.row[i].size );
     updateRow(&E.row[i]); 
   }
-  //at this point there will be a duped line, either the current (if e.cx is 0) or the one below otherwise
-  //return;
+  
 
-  if(E.cx == 0){
+  if(atChar == 0){
     E.row[to].size = 0;
     free(E.row[to].chars);
     E.row[to].chars = malloc(1 ); 
     E.row[to].chars[0] = '\0';
     updateRow(&E.row[to]);
 
-    E.cy++;
-    E.cx =0;
+  
 
     return;
   }
 
-  int splicePoint = E.row[E.cy].size-at;
+  int splicePoint = E.row[linenum].size-atChar;
 
   E.row[to].size = splicePoint;
   free(E.row[to].chars);
   E.row[to].chars = malloc(sizeof(char)*(splicePoint+1));
-  memcpy(E.row[to].chars, E.row[E.cy].chars+at, splicePoint*sizeof(char));
+  memcpy(E.row[to].chars, E.row[linenum].chars+atChar, splicePoint*sizeof(char));
   E.row[to].chars[splicePoint] = '\0';
   updateRow(&E.row[to]);
 
 
-  char temp[at+1];
-  memcpy(temp, E.row[E.cy].chars,at );
-  temp[at] = '\0';
-  E.row[E.cy].size = at;
-  free(E.row[E.cy].chars);
-  E.row[E.cy].chars = malloc(sizeof(char)*(at+1));
-  memcpy( E.row[E.cy].chars,temp,at+1 );
-  updateRow(&E.row[E.cy]);
-  E.cy++;
-  E.cx =0;
+  char temp[atChar+1];
+  memcpy(temp, E.row[linenum].chars,atChar );
+  temp[atChar] = '\0';
+  E.row[linenum].size = atChar;
+  free(E.row[linenum].chars);
+  E.row[linenum].chars = malloc(sizeof(char)*(atChar+1));
+  memcpy( E.row[linenum].chars,temp,atChar+1 );
+  updateRow(&E.row[linenum]);
+  E.dirty++;
 
 
 
 
-  /*int copylen = E.row[to].size - at;
+  /*int copylen = E.row[to].size - atChar;
   if(copylen == E.row[to].size){
     copylen = 0;
   }
@@ -369,7 +453,7 @@ void insertRow(char *s, size_t len, int at){
   E.row[to].size = copylen;
   free(E.row[to].chars);
   E.row[to].chars = malloc(copylen+1);
-  strncpy(E.row[to].chars, E.row[to-1].chars+at, copylen);
+  strncpy(E.row[to].chars, E.row[to-1].chars+atChar, copylen);
   E.row[to].chars[copylen] = '\0';
   updateRow(&E.row[to]);
 
@@ -395,8 +479,9 @@ void insertRow(char *s, size_t len, int at){
 }
 
 void insertNewLine(){
-  //erow *current = &E.row[E.cy];
-  insertRow("test", 4, E.cx);
+  insertRow( E.cx,E.cy);
+  E.cy++;
+  E.cx =0;
 
 
 
@@ -648,7 +733,7 @@ void MoveCursor(int key) {
     E.cx = rowlen;
   }
 }
-
+void test();
 void processKeypress() {
   int c = readKey();
 
@@ -665,7 +750,9 @@ void processKeypress() {
     editorSave();
     break;
   case HOME_KEY:
-    E.cx = 0;
+    //E.cx = 0;
+    test();
+    
     break;
   case END_KEY:
   
@@ -687,7 +774,17 @@ void processKeypress() {
   } break;
 
   case DEL_KEY:
+  if(E.cy == E.numrows-1 && E.cx == E.row[E.numrows-1].size){
+    return;
+  }
+  rowDeleteChar(E.cx, E.cy);
+  break;
   case BACKSPACE:
+    rowDeleteChar(E.cx-1, E.cy);
+    if(E.cx >0){
+      E.cx--;
+    }
+  break;
   case CTRL_KEY('h'):
   /*todo*/
   break;
@@ -748,6 +845,14 @@ int main(int argc, char *argv[]) {
   }
 
   return 0;
+}
+
+
+void test(){
+  char *t = malloc(10);
+  snprintf(t, 10, "123456789");
+  memmove(&t[2], &t[4],5);
+  setStatusMessage(t);
 }
 // #endregion
 
