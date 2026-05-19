@@ -61,6 +61,12 @@ struct editorConfig {
   erow *row;
 };
 
+typedef struct WindowData {
+  int aX, aY;
+  int width, height;
+
+} WindowData;
+
 struct editorConfig E;
 // #endregion
 
@@ -318,7 +324,7 @@ void shiftRowsUp(int toRow){
   }
   erow *newp = realloc(E.row, sizeof(erow)*(E.numrows-1));
   if(newp == NULL){
-    setStatusMessage("Realloc failed at row append");
+    setStatusMessage("Realloc failed at shifting rows up: %s", strerror(errno));
     return;
   }
   else {
@@ -380,34 +386,37 @@ void rowDeleteChar(int at,int row){
   }
 
 }
-
-
-
-void insertRow( int atChar, int linenum){
-
-
+int tse =0;
+void shiftRowsDown(int fromRow){
+ 
   erow *newp = realloc(E.row, sizeof(erow)*(E.numrows+1));
   if(newp == NULL){
-    setStatusMessage("Realloc failed: %s", strerror(errno));
+    setStatusMessage("Realloc failed at shifting rows down: %s", strerror(errno));
     return;
   }
   else {  
     E.row = newp;
   }
 
-  int to = linenum; //when shifting rows down, it stops here (either where the new line was created or one below)
-  if(atChar != 0) to +=1;
-
-
   appendRow(E.row[E.numrows-1].chars, E.row[E.numrows-1].size); // create a copy of the last line
-  for(int i = (E.numrows-2); i > to; i--){//set the contents of a row to the one above it, for all rows below TO
+  
+  for(int i = (E.numrows-2); i > fromRow; i--){
+    
     E.row[i].size = E.row[i-1].size;
     free(E.row[i].chars);
     E.row[i].chars = malloc(E.row[i].size+1 ); 
     memcpy(E.row[i].chars, E.row[i-1].chars, E.row[i].size );
     updateRow(&E.row[i]); 
   }
-  
+}
+
+
+void insertRow( int atChar, int linenum){
+
+  int to = linenum; //when shifting rows down, it stops here (either where the new line was created or one below)
+  if(atChar != 0) to +=1;
+
+  shiftRowsDown(to);
 
   if(atChar == 0){
     E.row[to].size = 0;
@@ -415,8 +424,6 @@ void insertRow( int atChar, int linenum){
     E.row[to].chars = malloc(1 ); 
     E.row[to].chars[0] = '\0';
     updateRow(&E.row[to]);
-
-  
 
     return;
   }
@@ -619,7 +626,7 @@ void setStatusMessage(const char *fmt,...){
 void drawUIRows(struct abuf *ab){
   abAppend(ab, "\x1b[7m", 4);
   char lbuff[80],rbuff[80];
-  int llen = snprintf(lbuff , sizeof(lbuff),"CX: %d CY: %d RX: %d Rows: %d RL: %d RS: %zu",E.cx,E.cy, E.rx, E.numrows, E.row[E.cy].size,sizeof(E.row[E.cy].chars));
+  int llen = snprintf(lbuff , sizeof(lbuff),"CX: %d CY: %d RX: %d Rows: %d RL: %d RS: %zu T: %d",E.cx,E.cy, E.rx, E.numrows, E.row[E.cy].size,sizeof(E.row[E.cy].chars),tse);
   int rlen = snprintf(rbuff, sizeof(rbuff),"%c%.30s", E.dirty==0 ? ' ' : '*' ,E.filename ? E.filename : "[No name]" );
 
   int space = E.screencols-(rlen+llen);
@@ -643,25 +650,47 @@ void drawUIRows(struct abuf *ab){
  
 }
 
+void test(struct abuf *ab, int rowlen){
+  int move = 20-rowlen;
+  if(move <= 0){
+    return;
+  }
+ 
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%dC", (E.cy - E.rowoffset)+1);
+  abAppend(ab, buf, strlen(buf));
+  abAppend(ab, "\x1b[7m", 4);// invert colors
+  abAppend(ab, "/", 1);
+  abAppend(ab, "\x1b[m", 3);// reset colors
+
+  char sbuf[32];
+  snprintf(sbuf, sizeof(sbuf), "\x1b[%dD", (E.cy - E.rowoffset)+1);
+  abAppend(ab, sbuf, strlen(sbuf));
+
+}
+
 void drawRows(struct abuf *ab) {
   int y;
+
   for (y = 0; y < E.screenrows; y++) {
     int filerow = y +E.rowoffset;
-    
+    int len;
     if (filerow >= E.numrows) {
 
       abAppend(ab, "~", 1);
+      len = 1;
 
     } else {
 
-      int len = E.row[filerow].rsize -E.coloffset;
+      len = E.row[filerow].rsize -E.coloffset;
       if(len < 0) len =0;
       if (len > E.screencols)
         len = E.screencols;
       abAppend(ab, &E.row[filerow].render[E.coloffset], len);
     }
-    abAppend(ab, "\x1b[K", 3);
+    abAppend(ab, "\x1b[K", 3); // Erase in line, args: 0 (def) - erase to the right of the cursor
 
+    //test(ab,len);
     
     abAppend(ab, "\r\n", 2);
     
@@ -692,6 +721,14 @@ void refreshScreen() {
   abFree(&ab);
 }
 // #endregion
+
+// #region Windows
+
+
+
+
+// #endregion
+
 // #region  Input
 
 void MoveCursor(int key) {
@@ -733,7 +770,7 @@ void MoveCursor(int key) {
     E.cx = rowlen;
   }
 }
-void test();
+
 void processKeypress() {
   int c = readKey();
 
@@ -751,7 +788,7 @@ void processKeypress() {
     break;
   case HOME_KEY:
     //E.cx = 0;
-    test();
+   
     
     break;
   case END_KEY:
@@ -847,13 +884,6 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-
-void test(){
-  char *t = malloc(10);
-  snprintf(t, 10, "123456789");
-  memmove(&t[2], &t[4],5);
-  setStatusMessage(t);
-}
 // #endregion
 
 // todo : pressing enter at a newly created line causes a segfaul if done immidiately after creation, or looses a couple of charsif not imiidiately
