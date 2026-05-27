@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define KILO_VERSION "0.0.1"
@@ -59,6 +60,12 @@ struct editorConfig {
   char statusmsg[80];
   time_t statusmsg_time;
   erow *row;
+
+  bool searchOpen;
+  erow *searchRow;
+  int sx;
+
+
 };
 
 typedef struct WindowData {
@@ -297,14 +304,25 @@ void appendRow(char *s, size_t len) {
   E.dirty++;
 }
 
+void rowInsertCharacter(int c) {
+  erow *curent;
+  int at = 0;
+  if (E.searchOpen) {
+    curent = E.searchRow;
+    at = E.sx;
+  }
+  else {
+    curent = &E.row[E.cy];
+    at = E.cx;
+  }
 
-void rowInsertCharacter(int c)
-{
-   
-    erow *curent = &E.row[E.cy];
+ 
 
-    addCharToRow( curent ,c, E.cx);
+  addCharToRow(curent, c, at);
+  if(!E.searchOpen){
     E.dirty++;
+  }
+ 
 }
 
 void deleteChar(erow *row, int at){
@@ -486,6 +504,10 @@ void insertRow( int atChar, int linenum){
 }
 
 void insertNewLine(){
+
+  if(E.searchOpen){
+    return;
+  }
   insertRow( E.cx,E.cy);
   E.cy++;
   E.cx =0;
@@ -584,6 +606,22 @@ void abAppend(struct abuf *ab, const char *s, int len) {
   memcpy(&new[ab->len], s, len);
   ab->b = new;
   ab->len += len;
+
+}
+
+void abStrip(struct abuf *ab,int len){
+  char *new = realloc(ab->b, ab->len-len);
+
+  if(new == NULL){
+    setStatusMessage("Ab strip failed", strerror(errno));
+    return;
+  }
+  
+
+  ab->b = new;
+  ab->len -=len;
+   
+
 }
 
 void abFree(struct abuf *ab) { free(ab->b); }
@@ -650,24 +688,114 @@ void drawUIRows(struct abuf *ab){
  
 }
 
-void test(struct abuf *ab, int rowlen){
-  int move = 20-rowlen;
-  if(move <= 0){
+struct tWin{
+  int anchY;
+  int anchX;
+  int height;
+  int width;
+};
+
+struct tWin searchWin = {1,20,4,20};
+
+void test(struct abuf *ab, int rowlen,int currentRow){
+
+  if(!E.searchOpen) return;
+  
+  struct tWin testwin = searchWin;
+  
+  if(currentRow < testwin.anchY || currentRow >= testwin.anchY+testwin.height){ //not on a row occupied by a window
     return;
   }
+
+  if(testwin.anchX+testwin.width > E.screencols){ //window outside the screen
+    return;
+  }
+
+  int offset = testwin.anchX-rowlen;
+  if(rowlen >= testwin.anchX) //window would overlap -tbc
+  {
+    int overlap = rowlen-testwin.anchX;
+    setStatusMessage("overlap %d",overlap);
+
+    abStrip(ab, overlap);
+    rowlen -= overlap;
+    offset = 0;
+
+    //return;
+  }
+
+
+
+  if(offset > 0){
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%dC", offset);
+    abAppend(ab, buf, strlen(buf));
+  }
+  
+
+  
  
-  char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%dC", (E.cy - E.rowoffset)+1);
-  abAppend(ab, buf, strlen(buf));
+ 
   abAppend(ab, "\x1b[7m", 4);// invert colors
-  abAppend(ab, "/", 1);
+
+  if(currentRow == testwin.anchY || currentRow == testwin.anchY+testwin.height-1)
+  {
+    char border[testwin.width];
+    for(int i = 0; i < testwin.width;i++){
+      border[i] = '/';
+    }
+    abAppend(ab, border, testwin.width);
+  }
+  else if(currentRow == testwin.anchY+1){
+    abAppend(ab, "/", 1);
+    abAppend(ab, "\x1b[m", 3);// reset colors
+
+    int len = E.searchRow->rsize;
+    if( len>0){
+
+      if(len > testwin.width-2) len =testwin.width-2;
+
+      abAppend(ab, E.searchRow->render, len);
+    }
+    abAppend(ab, "\x1b[7m", 4);// invert colors
+    char spbuf[32];
+    snprintf(spbuf, sizeof(spbuf), "\x1b[%dC", testwin.width-2-len);
+    abAppend(ab, spbuf, strlen(spbuf));
+    abAppend(ab, "/", 1);
+
+  }
+  else {
+    abAppend(ab, "/", 1);
+    char spbuf[32];
+    snprintf(spbuf, sizeof(spbuf), "\x1b[%dC", testwin.width-2);
+    abAppend(ab, spbuf, strlen(spbuf));
+    abAppend(ab, "/", 1);
+
+  }
+ 
   abAppend(ab, "\x1b[m", 3);// reset colors
 
   char sbuf[32];
-  snprintf(sbuf, sizeof(sbuf), "\x1b[%dD", (E.cy - E.rowoffset)+1);
+  snprintf(sbuf, sizeof(sbuf), "\x1b[%dD", offset);
   abAppend(ab, sbuf, strlen(sbuf));
 
 }
+
+
+  void openSearch()
+  {
+    E.searchOpen = true;
+    E.sx = 0;
+    E.searchRow = malloc(sizeof(erow));
+    E.searchRow->chars = malloc(sizeof(char));
+    E.searchRow->chars[0] = '\0';
+    E.searchRow->render = NULL;
+    E.searchRow->rsize = 0;
+    E.searchRow->size = 0;
+   
+    
+
+  }
 
 void drawRows(struct abuf *ab) {
   int y;
@@ -690,7 +818,7 @@ void drawRows(struct abuf *ab) {
     }
     abAppend(ab, "\x1b[K", 3); // Erase in line, args: 0 (def) - erase to the right of the cursor
 
-    //test(ab,len);
+    test(ab,len,y);
     
     abAppend(ab, "\r\n", 2);
     
@@ -711,8 +839,18 @@ void refreshScreen() {
 
   char buf[32];
 
+  int x,y;
+  if(E.searchOpen){
+    x = E.sx + searchWin.anchX+2;
+    y = searchWin.anchY+2;
+  }
+  else {
+     x=(E.rx - E.coloffset )+ 1;
+     y=(E.cy - E.rowoffset)+1;
+  }
+
   
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoffset)+1, (E.rx - E.coloffset )+ 1);
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", y, x);
   abAppend(&ab, buf, strlen(buf));
 
   abAppend(&ab, "\x1b[?25h", 6);
@@ -732,43 +870,72 @@ void refreshScreen() {
 // #region  Input
 
 void MoveCursor(int key) {
-  erow *row = (E.cy >= E.numrows ) ? NULL : &E.row[E.cy];
+  erow *row;
+  int rowSize;
+  int *x;
+  int *y;
 
+  if(E.searchOpen){
+    row = E.searchRow;
+    x = &E.sx;
+    y = &E.cy;
+    rowSize = E.searchRow->size;
+   
+  }
+  else {
+    row= (E.cy >= E.numrows ) ? NULL : &E.row[E.cy];
+    x = &E.cx;
+    y = &E.cy;
+    rowSize = E.row[E.cy].size;
+  }
+
+//causes seg fault, idk why something with accessing the variable x/y
+  //printf("adr %p",(void *)x);
+  //printf("con %d",*x);
+   
   switch (key) {
   case ARROW_LEFT:
-    if (E.cx != 0) {
-      E.cx--;
-    } else if (E.cy >0){
-      E.cy--;
-      E.cx = E.row[E.cy].size;
+    
+    if (*x != 0) {
+     
+      *x-=1;
+
+    } else if (*y >0 && !E.searchOpen){
+
+      *y -=1;
+      *x = rowSize;
+
     
     }
     break;
   case ARROW_RIGHT:
-    if (row && E.cx < row->size ) {
-      E.cx++;
-    }else if (row && E.cx == row->size && E.cy < E.numrows-1) {
-      E.cy++;
-      E.cx =0;
+    if (row && *x < row->size ) {
+      *x+=1;
+    }else if (row && *x == row->size && *y < E.numrows-1 &&!E.searchOpen) {
+      *y+=1;
+      *x =0;
     }
     break;
   case ARROW_UP:
-    if (E.cy != 0) {
-      E.cy--;
+    if (y != 0 && !E.searchOpen) {
+      *y-=1;
     }
     break;
   case ARROW_DOWN:
-    if (E.cy < E.numrows-1) {
-      E.cy++;
+    if (*y < E.numrows-1 &&!E.searchOpen) {
+      *y+=1;
     }
     break;
   }
 
-  row = (E.cy >= E.numrows ) ? NULL : &E.row[E.cy];
-  int rowlen = row ? row->size : 0;
-  if(E.cx > rowlen){
-    E.cx = rowlen;
+  if(E.searchOpen == false){
+    row = (E.cy >= E.numrows ) ? NULL : &E.row[E.cy];
+    int rowlen = row ? row->size : 0;
+    if(E.cx > rowlen){
+      E.cx = rowlen;
+    }
   }
+  
 }
 
 void processKeypress() {
@@ -781,6 +948,9 @@ void processKeypress() {
   case CTRL_KEY('q'):
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
+    if(E.searchOpen){
+      printf("sr %s",E.searchRow->chars);
+    }
     exit(0);
     break;
   case CTRL_KEY('s'):
@@ -811,19 +981,19 @@ void processKeypress() {
   } break;
 
   case DEL_KEY:
-  if(E.cy == E.numrows-1 && E.cx == E.row[E.numrows-1].size){
+  if(E.cy == E.numrows-1 && E.cx == E.row[E.numrows-1].size && !E.searchOpen){
     return;
   }
   rowDeleteChar(E.cx, E.cy);
   break;
   case BACKSPACE:
     rowDeleteChar(E.cx-1, E.cy);
-    if(E.cx >0){
+    if(E.cx >0 && !E.searchOpen){
       E.cx--;
     }
   break;
   case CTRL_KEY('h'):
-  /*todo*/
+  openSearch();
   break;
 
   case ARROW_UP:
@@ -860,6 +1030,12 @@ void initEditor() {
   E.statusmsg_time = 0;
   E.dirty =0;
 
+  E.searchOpen = false;
+  E.sx =0;
+  
+
+  
+
   if (getWindowSize(&E.screenrows, &E.screencols) == -1)
     die("getWindowSize");
 
@@ -880,6 +1056,7 @@ int main(int argc, char *argv[]) {
     refreshScreen();
     processKeypress();
   }
+  
 
   return 0;
 }
