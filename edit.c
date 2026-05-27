@@ -319,8 +319,13 @@ void rowInsertCharacter(int c) {
  
 
   addCharToRow(curent, c, at);
+  
   if(!E.searchOpen){
+    E.cx++;
     E.dirty++;
+  }
+  else {
+  E.sx++;
   }
  
 }
